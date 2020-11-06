@@ -199,25 +199,11 @@ void Query::deserialize(Serializer &ser, bool &hasJoinConditions) {
 				Drop(string(ser.GetVString()));
 				break;
 			}
-			case QueryUpdateFieldV2: {
+			case QueryUpdateField: {
 				VariantArray val;
 				string field(ser.GetVString());
 				bool isArray = ser.GetVarUint();
 				int numValues = ser.GetVarUint();
-				bool hasExpressions = false;
-				while (numValues--) {
-					hasExpressions = ser.GetVarUint();
-					val.emplace_back(ser.GetVariant().EnsureHold());
-				}
-				if (isArray) val.MarkArray();
-				Set(std::move(field), std::move(val), hasExpressions);
-				break;
-			}
-			case QueryUpdateField: {
-				VariantArray val;
-				string field(ser.GetVString());
-				int numValues = ser.GetVarUint();
-				bool isArray = numValues > 1;
 				bool hasExpressions = false;
 				while (numValues--) {
 					hasExpressions = ser.GetVarUint();
@@ -348,7 +334,7 @@ void Query::Serialize(WrSerializer &ser, uint8_t mode) const {
 
 	for (const UpdateEntry &field : updateFields_) {
 		if (field.mode == FieldModeSet) {
-			ser.PutVarUint(QueryUpdateFieldV2);
+			ser.PutVarUint(QueryUpdateField);
 			ser.PutVString(field.column);
 			ser.PutVarUint(field.values.IsArrayValue());
 			ser.PutVarUint(field.values.size());

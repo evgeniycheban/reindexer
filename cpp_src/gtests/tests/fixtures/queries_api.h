@@ -258,6 +258,20 @@ public:
 		unordered_set<string> pks;
 		unordered_map<string, unordered_set<string>> distincts;
 
+		struct QueryWatcher {
+			~QueryWatcher() {
+				if (::testing::Test::HasFailure()) {
+					reindexer::WrSerializer ser;
+					q.GetSQL(ser);
+					TEST_COUT << "Failed query dest: " << ser.Slice() << std::endl;
+					assert(false);
+				}
+			}
+
+			const Query& q;
+		};
+		QueryWatcher watcher{query};
+
 		VariantArray lastSortedColumnValues;
 		lastSortedColumnValues.resize(query.sortingEntries_.size());
 
@@ -372,14 +386,18 @@ public:
 		}
 
 		const auto& aggResults = qr.GetAggregationResults();
-		ASSERT_EQ(aggResults.size(), query.aggregations_.size());
-		for (size_t i = 0; i < aggResults.size(); ++i) {
-			EXPECT_EQ(aggResults[i].type, query.aggregations_[i].type_) << "i = " << i;
-			ASSERT_EQ(aggResults[i].fields.size(), query.aggregations_[i].fields_.size()) << "i = " << i;
-			for (size_t j = 0; j < aggResults[i].fields.size(); ++j) {
-				EXPECT_EQ(aggResults[i].fields[j], query.aggregations_[i].fields_[j]) << "i = " << i << ", j = " << j;
+		EXPECT_EQ(aggResults.size(), query.aggregations_.size());
+		if (aggResults.size() == query.aggregations_.size()) {
+			for (size_t i = 0; i < aggResults.size(); ++i) {
+				EXPECT_EQ(aggResults[i].type, query.aggregations_[i].type_) << "i = " << i;
+				EXPECT_EQ(aggResults[i].fields.size(), query.aggregations_[i].fields_.size()) << "i = " << i;
+				if (aggResults[i].fields.size() == query.aggregations_[i].fields_.size()) {
+					for (size_t j = 0; j < aggResults[i].fields.size(); ++j) {
+						EXPECT_EQ(aggResults[i].fields[j], query.aggregations_[i].fields_[j]) << "i = " << i << ", j = " << j;
+					}
+				}
+				EXPECT_LE(aggResults[i].facets.size(), query.aggregations_[i].limit_) << "i = " << i;
 			}
-			EXPECT_LE(aggResults[i].facets.size(), query.aggregations_[i].limit_) << "i = " << i;
 		}
 	}
 
@@ -1550,60 +1568,76 @@ protected:
 		checkFacet(testQr.aggregationResults[5].facets, multifieldFacet, "Multifield");
 	}
 
-	void CompareQueryResults(const QueryResults& lhs, const QueryResults& rhs) {
-		ASSERT_EQ(lhs.Count(), rhs.Count());
-		for (size_t i = 0; i < rhs.Count(); ++i) {
-			Item ritem1(rhs[i].GetItem());
-			Item ritem2(lhs[i].GetItem());
-			EXPECT_EQ(ritem1.NumFields(), ritem2.NumFields());
-			if (ritem1.NumFields() == ritem2.NumFields()) {
-				for (int idx = 1; idx < ritem1.NumFields(); ++idx) {
-					const VariantArray& v1 = ritem1[idx];
-					const VariantArray& v2 = ritem2[idx];
+	void CompareQueryResults(const std::string& serializedQuery, const QueryResults& lhs, const QueryResults& rhs) {
+		EXPECT_EQ(lhs.Count(), rhs.Count());
+		if (lhs.Count() == rhs.Count()) {
+			for (size_t i = 0; i < lhs.Count(); ++i) {
+				Item ritem1(rhs[i].GetItem());
+				Item ritem2(lhs[i].GetItem());
+				EXPECT_EQ(ritem1.NumFields(), ritem2.NumFields());
+				if (ritem1.NumFields() == ritem2.NumFields()) {
+					for (int idx = 1; idx < ritem1.NumFields(); ++idx) {
+						const VariantArray& v1 = ritem1[idx];
+						const VariantArray& v2 = ritem2[idx];
 
-					ASSERT_EQ(v1.size(), v2.size());
-					for (size_t j = 0; j < v1.size(); ++j) {
-						EXPECT_EQ(v1[j].Compare(v2[j]), 0);
+						EXPECT_EQ(v1.size(), v2.size());
+						if (v1.size() == v2.size()) {
+							for (size_t j = 0; j < v1.size(); ++j) {
+								EXPECT_EQ(v1[j].Compare(v2[j]), 0);
+							}
+						}
+					}
+				}
+			}
+
+			EXPECT_EQ(lhs.aggregationResults.size(), rhs.aggregationResults.size());
+			if (lhs.aggregationResults.size() == rhs.aggregationResults.size()) {
+				for (size_t i = 0; i < rhs.aggregationResults.size(); ++i) {
+					const auto& aggRes1 = rhs.aggregationResults[i];
+					const auto& aggRes2 = lhs.aggregationResults[i];
+					EXPECT_EQ(aggRes1.type, aggRes2.type);
+					EXPECT_DOUBLE_EQ(aggRes1.value, aggRes2.value);
+					EXPECT_EQ(aggRes1.fields.size(), aggRes2.fields.size());
+					if (aggRes1.fields.size() == aggRes2.fields.size()) {
+						for (size_t j = 0; j < aggRes1.fields.size(); ++j) {
+							EXPECT_EQ(aggRes1.fields[j], aggRes2.fields[j]);
+						}
+					}
+					EXPECT_EQ(aggRes1.facets.size(), aggRes2.facets.size());
+					if (aggRes1.facets.size() == aggRes2.facets.size()) {
+						for (size_t j = 0; j < aggRes1.facets.size(); ++j) {
+							EXPECT_EQ(aggRes1.facets[j].count, aggRes2.facets[j].count);
+							EXPECT_EQ(aggRes1.facets[j].values.size(), aggRes2.facets[j].values.size());
+							if (aggRes1.facets[j].values.size() == aggRes2.facets[j].values.size()) {
+								for (size_t k = 0; k < aggRes1.facets[j].values.size(); ++k) {
+									EXPECT_EQ(aggRes1.facets[j].values[k], aggRes2.facets[j].values[k]) << aggRes1.facets[j].values[0];
+								}
+							}
+						}
 					}
 				}
 			}
 		}
-
-		ASSERT_EQ(lhs.aggregationResults.size(), rhs.aggregationResults.size());
-		for (size_t i = 0; i < rhs.aggregationResults.size(); ++i) {
-			const auto& aggRes1 = rhs.aggregationResults[i];
-			const auto& aggRes2 = lhs.aggregationResults[i];
-			EXPECT_EQ(aggRes1.type, aggRes2.type);
-			EXPECT_DOUBLE_EQ(aggRes1.value, aggRes2.value);
-			ASSERT_EQ(aggRes1.fields.size(), aggRes2.fields.size());
-			for (size_t j = 0; j < aggRes1.fields.size(); ++j) {
-				EXPECT_EQ(aggRes1.fields[j], aggRes2.fields[j]);
-			}
-			ASSERT_EQ(aggRes1.facets.size(), aggRes2.facets.size());
-			for (size_t j = 0; j < aggRes1.facets.size(); ++j) {
-				EXPECT_EQ(aggRes1.facets[j].count, aggRes2.facets[j].count);
-				ASSERT_EQ(aggRes1.facets[j].values.size(), aggRes2.facets[j].values.size());
-				for (size_t k = 0; k < aggRes1.facets[j].values.size(); ++k) {
-					EXPECT_EQ(aggRes1.facets[j].values[k], aggRes2.facets[j].values[k]) << aggRes1.facets[j].values[0];
-				}
-			}
+		if (::testing::Test::HasFailure()) {
+			FAIL() << "Failed query: " << serializedQuery;
+			assert(false);
 		}
 	}
 
 	void checkDslQuery(const std::string& ns, const std::string& dslQuery, const Query& checkQuery) {
 		Query parsedQuery;
 		Error err = parsedQuery.FromJSON(dslQuery);
-		ASSERT_TRUE(err.ok()) << err.what();
+		ASSERT_TRUE(err.ok()) << "Query: " << dslQuery << "; err: " << err.what();
 
 		QueryResults dslQr;
 		err = rt.reindexer->Select(parsedQuery, dslQr);
-		ASSERT_TRUE(err.ok()) << err.what();
+		ASSERT_TRUE(err.ok()) << "Query: " << dslQuery << "; err: " << err.what();
 
 		QueryResults checkQr;
 		err = rt.reindexer->Select(checkQuery, checkQr);
-		ASSERT_TRUE(err.ok()) << err.what();
+		ASSERT_TRUE(err.ok()) << "Query: " << dslQuery << "; err: " << err.what();
 
-		CompareQueryResults(dslQr, checkQr);
+		CompareQueryResults(dslQuery, dslQr, checkQr);
 		Verify(ns, checkQr, checkQuery);
 	}
 
@@ -1652,7 +1686,7 @@ protected:
 		err = rt.reindexer->Select(checkQuery1, checkQr1);
 		ASSERT_TRUE(err.ok()) << err.what();
 
-		CompareQueryResults(sqlQr1, checkQr1);
+		CompareQueryResults(sqlQuery, sqlQr1, checkQr1);
 		Verify(default_namespace, checkQr1, checkQuery1);
 
 		sqlQuery = "SELECT ID, Year, Genre FROM test_namespace WHERE genre IN ('1',2,'3') ORDER BY year DESC LIMIT 10000000";
@@ -1667,7 +1701,7 @@ protected:
 		err = rt.reindexer->Select(checkQuery2, checkQr2);
 		ASSERT_TRUE(err.ok()) << err.what();
 
-		CompareQueryResults(sqlQr2, checkQr2);
+		CompareQueryResults(sqlQuery, sqlQr2, checkQr2);
 		Verify(default_namespace, checkQr2, checkQuery2);
 
 		const string likePattern = RandLikePattern();
@@ -1683,7 +1717,7 @@ protected:
 		err = rt.reindexer->Select(checkQuery3, checkQr3);
 		ASSERT_TRUE(err.ok()) << err.what();
 
-		CompareQueryResults(sqlQr3, checkQr3);
+		CompareQueryResults(sqlQuery, sqlQr3, checkQr3);
 		Verify(default_namespace, checkQr3, checkQuery3);
 
 		sqlQuery = "SELECT FACET(ID, Year ORDER BY ID DESC ORDER BY Year ASC LIMIT 20 OFFSET 1) FROM test_namespace LIMIT 10000000";
@@ -1699,7 +1733,7 @@ protected:
 		err = rt.reindexer->Select(checkQuery4, checkQr4);
 		ASSERT_TRUE(err.ok()) << err.what();
 
-		CompareQueryResults(sqlQr4, checkQr4);
+		CompareQueryResults(sqlQuery, sqlQr4, checkQr4);
 		Verify(default_namespace, checkQr4, checkQuery4);
 
 		sqlQuery = "SELECT ID FROM test_namespace WHERE name LIKE '" + likePattern +
@@ -1721,7 +1755,7 @@ protected:
 		err = rt.reindexer->Select(checkQuery5, checkQr5);
 		ASSERT_TRUE(err.ok()) << err.what();
 
-		CompareQueryResults(sqlQr5, checkQr5);
+		CompareQueryResults(sqlQuery, sqlQr5, checkQr5);
 		Verify(default_namespace, checkQr5, checkQuery5);
 
 		sqlQuery = string("SELECT ID FROM test_namespace ORDER BY '") + kFieldNameYear + " + " + kFieldNameId + " * 5' DESC LIMIT 10000000";
@@ -1736,7 +1770,7 @@ protected:
 		err = rt.reindexer->Select(checkQuery6, checkQr6);
 		ASSERT_TRUE(err.ok()) << err.what();
 
-		CompareQueryResults(sqlQr6, checkQr6);
+		CompareQueryResults(sqlQuery, sqlQr6, checkQr6);
 		Verify(default_namespace, checkQr6, checkQuery6);
 
 		sqlQuery = string("SELECT ID FROM test_namespace ORDER BY '") + kFieldNameYear + " + " + kFieldNameId +
@@ -1753,7 +1787,7 @@ protected:
 		err = rt.reindexer->Select(checkQuery7, checkQr7);
 		ASSERT_TRUE(err.ok()) << err.what();
 
-		CompareQueryResults(sqlQr7, checkQr7);
+		CompareQueryResults(sqlQuery, sqlQr7, checkQr7);
 		Verify(default_namespace, checkQr7, checkQuery7);
 
 		// Checks that SQL queries with DWithin works and compares the result with the result of corresponding C++ query
@@ -1771,7 +1805,7 @@ protected:
 		err = rt.reindexer->Select(checkQuery8, checkQr8);
 		ASSERT_TRUE(err.ok()) << err.what();
 
-		CompareQueryResults(sqlQr8, checkQr8);
+		CompareQueryResults(sqlQuery, sqlQr8, checkQr8);
 		Verify(geomNs, checkQr8, checkQuery8);
 
 		point = RandPoint();
@@ -1788,7 +1822,7 @@ protected:
 		err = rt.reindexer->Select(checkQuery9, checkQr9);
 		ASSERT_TRUE(err.ok()) << err.what();
 
-		CompareQueryResults(sqlQr9, checkQr9);
+		CompareQueryResults(sqlQuery, sqlQr9, checkQr9);
 		Verify(geomNs, checkQr9, checkQuery9);
 	}
 
